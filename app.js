@@ -25,6 +25,8 @@
     train: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M7 2h10a4 4 0 0 1 4 4v9a3.5 3.5 0 0 1-3 3.46L19.5 21h-2.3l-1.5-2.5H8.3L6.8 21H4.5L6 18.46A3.5 3.5 0 0 1 3 15V6a4 4 0 0 1 4-4Zm-1 4.5V11h12V6.5A1.5 1.5 0 0 0 16.5 5h-9A1.5 1.5 0 0 0 6 6.5Zm1.5 7a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm9 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>',
     flug: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5Z"/></svg>',
     auto: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M5 11l1.5-4.5A2 2 0 0 1 8.4 5h7.2a2 2 0 0 1 1.9 1.5L19 11a2 2 0 0 1 2 2v4h-2v2h-3v-2H8v2H5v-2H3v-4a2 2 0 0 1 2-2Zm2.1 0h9.8l-1-3H8.1l-1 3ZM6.5 13a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm11 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>',
+    bus: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M6 2h12a3 3 0 0 1 3 3v11a2 2 0 0 1-1 1.73V20a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-1.5h-9V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2.27A2 2 0 0 1 3 16V5a3 3 0 0 1 3-3Zm-.5 4v5h13V6h-13ZM7 13.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm10 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>',
+    schiff: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M11 2h2v3h4l1.2 6.2L21 12.4 19 19H5l-2-6.6 2.8-1.2L7 5h4V2Zm-2.3 5-.8 3.5L12 9l4.1 1.5-.8-3.5H8.7ZM2 21.5c1.4 0 2.6-.5 3.5-1.2.9.7 2.1 1.2 3.5 1.2s2.6-.5 3.5-1.2c.9.7 2.1 1.2 3.5 1.2s2.6-.5 3.5-1.2c.9.7 2.1 1.2 3.5 1.2V23c-1.4 0-2.6-.4-3.5-1-.9.6-2.1 1-3.5 1s-2.6-.4-3.5-1c-.9.6-2.1 1-3.5 1s-2.6-.4-3.5-1c-.9.6-2.1 1-3.5 1v-1.5Z"/></svg>',
     up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
     down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
     move: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h13l-3.5-3.5M19 16H6l3.5 3.5"/></svg>',
@@ -63,6 +65,9 @@
   const picker = { day: 0, q: '', city: 'all' };
 
   const LA = () => ` lang="${T.lang}"`;
+  const isCjk = () => (T.script || 'cjk') === 'cjk';
+  const MODE_ICON = { zug: 'train', flug: 'flug', auto: 'auto', bus: 'bus', schiff: 'schiff' };
+  const modeIcon = m => I[MODE_ICON[m] || 'flug'];
   const cur = () => T.currency.label;
   const fontStack = t => `'${t.font.family}', ${t.font.fallback}`;
   const cityColors = (t, k) => (t.cities[k] && t.cities[k].color) || BASE_COLORS[k] || BASE_COLORS.fra;
@@ -94,6 +99,7 @@
   function applyTheme() {
     let el = document.getElementById('trip-theme');
     if (!el) { el = document.createElement('style'); el.id = 'trip-theme'; document.head.appendChild(el); }
+    document.documentElement.dataset.script = T ? (T.script || 'cjk') : 'cjk';
     if (!T) { el.textContent = ''; return; }
     const dark = themeVars(T, true);
     el.textContent = `:root{${themeVars(T, false)};--font-hz:${fontStack(T)};--font-loc:${T.locFont}}`
@@ -102,16 +108,22 @@
   }
 
   // Nur die Zeichen laden, die als Schmuckschrift vorkommen (Städte, Stempel, Fahrkarten)
+  // Reisen mit derselben Schrift teilen sich einen Zeichensatz – sonst gewinnt nur der zuletzt geladene
   function loadFonts() {
+    const groups = {};
     TRIPS.forEach(t => {
-      const chars = new Set(('0123456789' + HOME_SEAL + t.seal + t.sealFmt.replace('{n}', '')).split(''));
-      Object.values(t.cities).forEach(c => Array.from(c.loc || '').forEach(ch => chars.add(ch)));
-      Object.values(t.tickets || {}).forEach(k => Array.from(k.from[0] + k.to[0]).forEach(ch => chars.add(ch)));
+      const key = t.font.family + '|' + t.font.weight;
+      const g = groups[key] || (groups[key] = { family: t.font.family, weight: t.font.weight, chars: new Set(Array.from('0123456789' + HOME_SEAL)) });
+      Array.from(t.seal + t.sealFmt.replace('{n}', '')).forEach(ch => g.chars.add(ch));
+      Object.values(t.cities).forEach(c => Array.from(c.loc || '').forEach(ch => g.chars.add(ch)));
+      Object.values(t.tickets || {}).forEach(k => Array.from(k.from[0] + k.to[0]).forEach(ch => g.chars.add(ch)));
+    });
+    Object.values(groups).forEach(g => {
       const link = document.createElement('link');
       link.rel = 'stylesheet';
       link.media = 'print';
       link.onload = () => { link.media = 'all'; };
-      link.href = `https://fonts.googleapis.com/css2?family=${t.font.family.replace(/ /g, '+')}:wght@${t.font.weight}&display=swap&text=${encodeURIComponent(Array.from(chars).join(''))}`;
+      link.href = `https://fonts.googleapis.com/css2?family=${g.family.replace(/ /g, '+')}:wght@${g.weight}&display=swap&text=${encodeURIComponent(Array.from(g.chars).join(''))}`;
       document.head.appendChild(link);
     });
   }
@@ -302,7 +314,7 @@
       const nights = days.filter(d => d && d.city !== 'fra').length;
       const start = s && isDate(s.start) ? parseDate(s.start) : null;
       const lt = t.theme.light, dk = t.theme.dark;
-      return `<a class="trip" href="#${t.id}/route" style="--tk-l:${lt.ticket};--tk-d:${dk.ticket};--tki-l:${lt.ink};--tki-d:${dk.ink};--tkl-l:${lt.line};--tkl-d:${dk.line};--font-hz:${esc(fontStack(t))}">
+      return `<a class="trip" href="#${t.id}/route" data-script="${t.script || 'cjk'}" style="--tk-l:${lt.ticket};--tk-d:${dk.ticket};--tki-l:${lt.ink};--tki-d:${dk.ink};--tkl-l:${lt.line};--tkl-d:${dk.line};--font-hz:${esc(fontStack(t))}">
         <div class="trip-head">
           <span class="trip-top"><span class="seal hz" lang="${t.lang}" aria-hidden="true">${t.seal}</span><span class="trip-days">${days.length} ${days.length === 1 ? 'Tag' : 'Tage'}, ${nightsText(nights)}</span></span>
           <h2 class="trip-name">${esc(t.name)}</h2>
@@ -334,13 +346,16 @@
     return segs;
   }
   function hopBetween(a, b) {
+    let fallback = null;
     for (const d of [state.days[b.from], state.days[a.to]]) {
       for (const it of d.items) {
         const x = getAct(it.id);
-        if (x && isTransport(x) && x.mode && x.mode !== 'auto') return x;
+        if (!x || !isTransport(x) || !x.mode) continue;
+        if (x.mode === 'flug' || x.mode === 'zug') return x;
+        if (!fallback) fallback = x;
       }
     }
-    return null;
+    return fallback;
   }
   function nightsText(n) { return `${n} ${n === 1 ? 'Nacht' : 'Nächte'}`; }
 
@@ -355,27 +370,29 @@
       parts.push(`<div class="stop" role="listitem" style="--c:var(--c-${s.city})">
         <button class="stop-btn" data-action="jump" data-day="${s.from}">
           <span class="stop-dot" aria-hidden="true"></span>
-          <span class="hz stop-hz${hzLen(c.loc) >= 5 ? ' is-long' : ''}"${LA()}>${c.loc}</span>
-          <span class="stop-name">${esc(label)}</span>
+          <span class="hz stop-hz${isCjk() && hzLen(c.loc) >= 5 ? ' is-long' : ''}"${LA()}>${c.loc}</span>
+          ${c.loc !== label ? `<span class="stop-name">${esc(label)}</span>` : ''}
           <span class="stop-sub">${sub}</span>
         </button></div>`);
       if (k < segs.length - 1) {
         const hop = hopBetween(s, segs[k + 1]);
-        parts.push(`<div class="hop" aria-hidden="true">${hop ? `<span class="hop-icon">${I[hop.mode === 'zug' ? 'train' : 'flug']}</span><span class="hop-t">${hop.dshort}</span>` : '<span class="hop-icon hop-none"></span>'}</div>`);
+        parts.push(`<div class="hop" aria-hidden="true">${hop ? `<span class="hop-icon">${modeIcon(hop.mode)}</span><span class="hop-t">${hop.dshort}</span>` : '<span class="hop-icon hop-none"></span>'}</div>`);
       }
     });
-    return `<div class="route" role="list" aria-label="Reiseroute">${parts.join('')}</div>`;
+    // Viele Stationen passen nicht nebeneinander – dann senkrecht wie auf dem Handy
+    return `<div class="route${segs.length > 7 ? ' route-v' : ''}" role="list" aria-label="Reiseroute">${parts.join('')}</div>`;
   }
 
   function ticketHtml(a, info, dayIdx) {
     const dt = dayDate(dayIdx);
-    const size = s => `hz tk-hz-${Math.min(7, Math.max(2, hzLen(s)))}`;
+    const eff = s => isCjk() ? hzLen(s) : Math.ceil(hzLen(s) * 0.55);
+    const size = s => `hz tk-hz-${Math.min(7, Math.max(2, eff(s)))}`;
     return `<article class="ticket">
       <div class="tk-head">
         <div class="tk-top">
           <span class="tk-serial">Tag ${dayIdx + 1}</span>
           ${dt ? `<span class="tk-date">${fmtDay.format(dt)}</span>` : ''}
-          <span class="tk-mode">${I[a.mode === 'zug' ? 'train' : 'flug']}${esc(info.label)}</span>
+          <span class="tk-mode">${modeIcon(a.mode)}${esc(info.label)}</span>
         </div>
         <div class="tk-route">
           <div class="tk-st"><span class="${size(info.from[0])}"${LA()}>${info.from[0]}</span><span class="tk-py">${esc(info.from[1])}</span></div>
@@ -395,7 +412,7 @@
   function cityHtml(key, nights) {
     const c = T.cities[key];
     return `<article class="city" style="--c:var(--c-${key})">
-      <div class="city-mark hz${hzLen(c.loc) >= 4 ? ' is-long' : ''}" aria-hidden="true"${LA()}>${c.loc}</div>
+      <div class="city-mark hz${hzLen(c.loc) >= (isCjk() ? 4 : 10) ? ' is-long' : ''}" aria-hidden="true"${LA()}>${c.loc}</div>
       <div class="city-body">
         <h3 class="city-name">${c.name} <span class="city-py">${c.py}</span></h3>
         <p class="city-n">${nights ? nightsText(nights) + ' im Plan' : 'Aktuell nicht im Plan'}</p>
@@ -440,7 +457,7 @@
         <tbody>
           <tr><th scope="row">${esc(B.flightLabel)}</th><td>${num(B.flight[0])}–${num(B.flight[1])} €</td></tr>
           <tr><th scope="row">Hotels, ${nights} Nächte</th><td>${num(hotel)} €</td></tr>
-          <tr><th scope="row">Züge und Inlandsflüge aus eurem Plan</th><td>${num(transport)} €</td></tr>
+          <tr><th scope="row">${esc(B.transportLabel || 'Züge und Inlandsflüge aus eurem Plan')}</th><td>${num(transport)} €</td></tr>
           <tr><th scope="row">Eintritte und Aktivitäten aus eurem Plan</th><td>${num(entries)} €</td></tr>
           <tr><th scope="row">Essen und Trinken</th><td>${num(food)} €</td></tr>
           <tr><th scope="row">${esc(B.extraLabel)}</th><td>${num(B.extra)} €</td></tr>
@@ -510,7 +527,7 @@
     return `<li class="item${tr ? ' is-transport' : ''}${it.done ? ' is-done' : ''}">
       <button class="slot" data-action="slot" data-day="${i}" data-idx="${j}" title="Tageszeit ändern">${SLOTS[it.slot]}</button>
       <div class="item-main">
-        <button class="item-title" data-action="detail" data-id="${a.id}" data-day="${i}" data-idx="${j}">${tr && a.mode ? I[a.mode === 'zug' ? 'train' : a.mode] : ''}${esc(a.t)}</button>
+        <button class="item-title" data-action="detail" data-id="${a.id}" data-day="${i}" data-idx="${j}">${tr && a.mode ? modeIcon(a.mode) : ''}${esc(a.t)}</button>
         <div class="item-meta">${a.loc ? `<span class="loc"${LA()}>${esc(a.loc)}</span>` : ''}<span>${fmtHours(a.d)}</span><span>${esc(priceText(a))}</span>${chilis(a.v)}</div>
         ${warns.length ? `<p class="warn">${esc(warns.join(', '))}</p>` : ''}
       </div>
@@ -527,6 +544,8 @@
     const dt = dayDate(i);
     const c = T.cities[d.city];
     const hours = d.items.reduce((s, it) => { const a = getAct(it.id); return s + (a ? Math.min(a.d || 0, 14) : 0); }, 0);
+    // Langstreckenflüge zählen nicht als „voller Tag“
+    const busy = d.items.reduce((s, it) => { const a = getAct(it.id); return s + (a && !(isTransport(a) && a.c === 'fra') ? Math.min(a.d || 0, 14) : 0); }, 0);
     const today = dt && sameDay(dt, new Date());
     return `<li class="day${today ? ' is-today' : ''}" id="day-${i}" style="--c:var(--c-${d.city})">
       <div class="day-stamp">
@@ -540,7 +559,7 @@
         <div class="day-top">
           <label class="sr-only" for="city-${i}">Ort an Tag ${i + 1}</label>
           <select id="city-${i}" class="city-select" data-change="day-city" data-day="${i}">${cityOptions(d.city)}</select>
-          ${hours ? `<span class="day-hours${hours > 12 ? ' is-warn' : ''}">${hours > 12 ? 'Sehr voll, ' : ''}ca. ${fmtHours(hours)}</span>` : ''}
+          ${hours ? `<span class="day-hours${busy > 12 ? ' is-warn' : ''}">${busy > 12 ? 'Sehr voll, ' : ''}ca. ${fmtHours(hours)}</span>` : ''}
         </div>
         ${d.items.length
           ? `<ul class="items">${d.items.map((it, j) => itemHtml(it, i, j, d.items.length)).join('')}</ul>`

@@ -1,6 +1,6 @@
 /* Offline-Cache: Die Seite funktioniert nach dem ersten Besuch auch ohne Netz (z. B. in China ohne VPN). */
-const CACHE = 'reiseplaner-v2';
-const ASSETS = ['./', './index.html', './style.css', './app.js', './trips/china.js', './trips/korea.js', './trips/japan.js', './favicon.svg', './manifest.webmanifest'];
+const CACHE = 'reiseplaner-v3';
+const ASSETS = ['./', './index.html', './style.css', './app.js', './trips/china.js', './trips/korea.js', './trips/japan.js', './trips/mongolia.js', './trips/kyrgyzstan.js', './trips/azerbaijan.js', './trips/chile.js', './trips/argentina.js', './favicon.svg', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
