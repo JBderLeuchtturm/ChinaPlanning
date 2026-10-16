@@ -1,22 +1,25 @@
 'use strict';
 (function () {
-  const T = window.TRIP;
-  const STORE = 'china-reise-v1';
+  /* Jede Reise liegt als eigene Datei in trips/ und meldet sich über window.TRIPS an. */
+  const TRIPS = window.TRIPS || [];
+  const TRIP_BY_ID = Object.create(null);
+  TRIPS.forEach(t => { TRIP_BY_ID[t.id] = t; });
+
+  const LEGACY_KEY = 'china-reise-v1';
+  const storeKey = id => `reise-${id}-v1`;
   const VIEWS = ['route', 'tage', 'ideen', 'tipps', 'check'];
   const SLOTS = ['Früh', 'Vormittag', 'Mittag', 'Nachmittag', 'Abend', 'Ganztags'];
   const SLOT_ORDER = [0, 1, 2, 3, 4, 1.5];
-  const CITY_KEYS = ['bj', 'sh', 'zjj', 'cq'];
-  const GROUP_ORDER = ['bj', 'sh', 'zjj', 'cq', 'any', 'fra'];
-  const HOTEL_TIERS = [['Budget', 45], ['Mittelklasse', 90], ['Komfort', 170]];
-  const FOOD_TIERS = [['Sparsam', 20], ['Normal', 35], ['Schlemmen', 60]];
   const WEEKDAYS = ['Sonntags', 'Montags', 'Dienstags', 'Mittwochs', 'Donnerstags', 'Freitags', 'Samstags'];
   const WD_SHORT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
   const MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
-  const CNY_DATES = { 2027: [1, 6], 2028: [0, 26], 2029: [1, 13], 2030: [1, 3] };
-  const VISA_END = new Date(2026, 11, 31);
-
-  const ACT = Object.create(null);
-  T.activities.forEach(a => { ACT[a.id] = a; });
+  const CATEGORIES = {
+    klassiker: 'Klassiker', verrueckt: 'Verrückt', essen: 'Essen & Trinken', natur: 'Natur', kultur: 'Kultur',
+    nacht: 'Abends & Nachts', chill: 'Entspannt', ausflug: 'Tagesausflug', transport: 'Anreise & Transfers', eigene: 'Eigene'
+  };
+  // 'fra' (unterwegs) und 'any' (überall) sind in jeder Reise reserviert
+  const BASE_COLORS = { fra: ['#5C6878', '#9AA7B6'], any: ['#8A6A17', '#D7B45A'] };
+  const HOME_SEAL = '旅';
 
   const I = {
     train: '<svg viewBox="0 0 24 24" class="i-fill" aria-hidden="true"><path d="M7 2h10a4 4 0 0 1 4 4v9a3.5 3.5 0 0 1-3 3.46L19.5 21h-2.3l-1.5-2.5H8.3L6.8 21H4.5L6 18.46A3.5 3.5 0 0 1 3 15V6a4 4 0 0 1 4-4Zm-1 4.5V11h12V6.5A1.5 1.5 0 0 0 16.5 5h-9A1.5 1.5 0 0 0 6 6.5Zm1.5 7a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm9 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>',
@@ -40,6 +43,78 @@
   const fmtDay = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' });
   const fmtDate = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'numeric', year: 'numeric' });
   const fmtLong = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+  function parseDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+  function mdDate(y, md) { const [m, d] = md.split('-').map(Number); return new Date(y, m - 1, d); }
+
+  /* ---------- Aktuelle Reise ---------- */
+
+  let T = null;               // aktuelle Reise
+  let ACT = Object.create(null);
+  let CITY_KEYS = [];
+  let GROUP_ORDER = [];
+  let state = null;
+  let view = 'home';
+  let undoSnap = null;
+  let stampId = null;
+  let pendingScroll = null;
+  let modalCtx = null;
+  const filters = { city: 'all', cat: 'all', crazy: 0, q: '' };
+  const picker = { day: 0, q: '', city: 'all' };
+
+  const LA = () => ` lang="${T.lang}"`;
+  const cur = () => T.currency.label;
+  const fontStack = t => `'${t.font.family}', ${t.font.fallback}`;
+  const cityColors = (t, k) => (t.cities[k] && t.cities[k].color) || BASE_COLORS[k] || BASE_COLORS.fra;
+
+  function setTrip(id) {
+    if (T && T.id === id) return;
+    T = TRIP_BY_ID[id];
+    ACT = Object.create(null);
+    T.activities.forEach(a => { ACT[a.id] = a; });
+    CITY_KEYS = Object.keys(T.cities).filter(k => k !== 'fra' && k !== 'any');
+    GROUP_ORDER = CITY_KEYS.concat(['any', 'fra']);
+    state = loadState(T.id) || freshState();
+    filters.city = 'all'; filters.cat = 'all'; filters.crazy = 0; filters.q = '';
+    undoSnap = null;
+    applyTheme();
+  }
+  function leaveTrip() {
+    T = null;
+    state = null;
+    applyTheme();
+  }
+
+  function themeVars(t, dark) {
+    const th = t.theme[dark ? 'dark' : 'light'];
+    const vars = [`--ticket:${th.ticket}`, `--ticket-ink:${th.ink}`, `--ticket-line:${th.line}`];
+    Object.keys(t.cities).forEach(k => vars.push(`--c-${k}:${cityColors(t, k)[dark ? 1 : 0]}`));
+    return vars.join(';');
+  }
+  function applyTheme() {
+    let el = document.getElementById('trip-theme');
+    if (!el) { el = document.createElement('style'); el.id = 'trip-theme'; document.head.appendChild(el); }
+    if (!T) { el.textContent = ''; return; }
+    const dark = themeVars(T, true);
+    el.textContent = `:root{${themeVars(T, false)};--font-hz:${fontStack(T)};--font-loc:${T.locFont}}`
+      + `@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){${dark}}}`
+      + `:root[data-theme="dark"]{${dark}}`;
+  }
+
+  // Nur die Zeichen laden, die als Schmuckschrift vorkommen (Städte, Stempel, Fahrkarten)
+  function loadFonts() {
+    TRIPS.forEach(t => {
+      const chars = new Set(('0123456789' + HOME_SEAL + t.seal + t.sealFmt.replace('{n}', '')).split(''));
+      Object.values(t.cities).forEach(c => Array.from(c.loc || '').forEach(ch => chars.add(ch)));
+      Object.values(t.tickets || {}).forEach(k => Array.from(k.from[0] + k.to[0]).forEach(ch => chars.add(ch)));
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.media = 'print';
+      link.onload = () => { link.media = 'all'; };
+      link.href = `https://fonts.googleapis.com/css2?family=${t.font.family.replace(/ /g, '+')}:wght@${t.font.weight}&display=swap&text=${encodeURIComponent(Array.from(chars).join(''))}`;
+      document.head.appendChild(link);
+    });
+  }
 
   /* ---------- Zustand ---------- */
 
@@ -47,26 +122,30 @@
     return T.defaultPlan.map(d => ({ city: d.city, hotel: '', note: '', items: d.items.map(([id, slot]) => ({ id, slot, done: false })) }));
   }
   function freshState() {
-    return { v: 1, start: '', people: 2, rate: 8.3, hotelTier: 1, foodTier: 1, days: planFromDefault(), custom: {}, checks: {} };
+    return { v: 1, start: '', people: 2, rate: T.currency.rate, hotelTier: 1, foodTier: 1, days: planFromDefault(), custom: {}, checks: {} };
+  }
+  function clampInt(v, min, max, dflt) {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
   }
   function normalize(s) {
     if (!s || !Array.isArray(s.days) || !s.days.length) return null;
     const out = freshState();
-    out.start = /^\d{4}-\d{2}-\d{2}$/.test(s.start || '') ? s.start : '';
+    out.start = isDate(s.start) ? s.start : '';
     out.people = clampInt(s.people, 1, 12, 2);
-    out.rate = Number(s.rate) > 0 ? Number(s.rate) : 8.3;
-    out.hotelTier = clampInt(s.hotelTier, 0, 2, 1);
-    out.foodTier = clampInt(s.foodTier, 0, 2, 1);
+    out.rate = Number(s.rate) > 0 ? Number(s.rate) : T.currency.rate;
+    out.hotelTier = clampInt(s.hotelTier, 0, T.budget.hotel.length - 1, 1);
+    out.foodTier = clampInt(s.foodTier, 0, T.budget.food.length - 1, 1);
     out.custom = {};
     Object.entries(s.custom || {}).forEach(([id, c]) => {
       if (!/^c-[a-z0-9]+$/.test(id) || !c || !c.t) return;
       out.custom[id] = {
-        t: String(c.t).slice(0, 80), zh: String(c.zh || '').slice(0, 120), desc: String(c.desc || '').slice(0, 400),
+        t: String(c.t).slice(0, 80), loc: String(c.loc || c.zh || '').slice(0, 120), desc: String(c.desc || '').slice(0, 400),
         d: Math.max(0, Number(c.d) || 0), p: Math.max(0, Number(c.p) || 0), c: T.cities[c.c] ? c.c : 'any'
       };
     });
     out.days = s.days.map(d => ({
-      city: T.cities[d && d.city] && d.city !== 'any' ? d.city : 'bj',
+      city: T.cities[d && d.city] && d.city !== 'any' ? d.city : CITY_KEYS[0],
       hotel: String((d && d.hotel) || '').slice(0, 300),
       note: String((d && d.note) || '').slice(0, 2000),
       items: ((d && d.items) || [])
@@ -77,25 +156,25 @@
     Object.keys(s.checks || {}).forEach(k => { if (s.checks[k]) out.checks[k] = true; });
     return out;
   }
-  function clampInt(v, min, max, dflt) {
-    const n = parseInt(v, 10);
-    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
+  function loadState(id) {
+    try { return normalize(JSON.parse(localStorage.getItem(storeKey(id)))); } catch (e) { return null; }
   }
-  function loadState() {
-    try { return normalize(JSON.parse(localStorage.getItem(STORE))); } catch (e) { return null; }
+  function savedRaw(id) {
+    try {
+      const s = JSON.parse(localStorage.getItem(storeKey(id)));
+      return s && Array.isArray(s.days) ? s : null;
+    } catch (e) { return null; }
   }
   function save() {
-    try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { /* privates Fenster o. Ä. */ }
+    try { localStorage.setItem(storeKey(T.id), JSON.stringify(state)); } catch (e) { /* privates Fenster o. Ä. */ }
   }
-
-  let state = loadState() || freshState();
-  let view = 'route';
-  let undoSnap = null;
-  let stampId = null;
-  let pendingScroll = null;
-  let modalCtx = null;
-  const filters = { city: 'all', cat: 'all', crazy: 0, q: '' };
-  const picker = { day: 0, q: '', city: 'all' };
+  function migrateLegacy() {
+    try {
+      const old = localStorage.getItem(LEGACY_KEY);
+      if (old && !localStorage.getItem(storeKey('china'))) localStorage.setItem(storeKey('china'), old);
+      if (old) localStorage.removeItem(LEGACY_KEY);
+    } catch (e) { /* ignorieren */ }
+  }
 
   function snapshot() { undoSnap = JSON.stringify(state); }
   function commit() { save(); render(); }
@@ -104,7 +183,7 @@
     if (ACT[id]) return ACT[id];
     const c = state.custom[id];
     if (!c) return null;
-    return { id, c: c.c, t: c.t, zh: c.zh, d: c.d, p: c.p, desc: c.desc || 'Eigene Aktivität.', tip: '', cat: ['eigene'], v: 0, w: 1, custom: true };
+    return { id, c: c.c, t: c.t, loc: c.loc, d: c.d, p: c.p, desc: c.desc || 'Eigene Aktivität.', tip: '', cat: ['eigene'], v: 0, w: 1, custom: true };
   }
   const isTransport = a => a.cat.indexOf('transport') >= 0;
 
@@ -133,7 +212,7 @@
   }
   function priceText(a) {
     if (a.pt) return a.pt;
-    return a.p ? `ca. ${num(a.p)} CNY` : 'gratis';
+    return a.p ? `ca. ${num(a.p)} ${cur()}` : 'gratis';
   }
   function chilis(v) {
     if (!v) return '';
@@ -146,18 +225,21 @@
     return m;
   }
   function cityName(key) { return (T.cities[key] || T.cities.any).name; }
-  function canTaxi(a) { return !!a.zh && a.taxi !== false; }
-  function amapUrl(a) {
-    const c = T.cities[a.c];
-    return `https://uri.amap.com/search?keyword=${encodeURIComponent(a.zh)}${c && c.zh && a.c !== 'fra' ? `&city=${encodeURIComponent(c.zh)}` : ''}&src=china-reise&callnative=1`;
-  }
-  function gmapsUrl(a) {
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.zh + ' ' + cityName(a.c))}`;
+  function homeName() { return T.cities.fra.py || 'Frankfurt'; }
+  function canTaxi(a) { return !!a.loc && a.taxi !== false; }
+  function mapLinks(a) {
+    if (!canTaxi(a) || a.c === 'any' || a.c === 'fra') return [];
+    const c = T.cities[a.c] || {};
+    return T.maps.map(m => ({
+      label: m.label,
+      url: m.url.replace('{q}', encodeURIComponent(a.loc)).replace('{cityLoc}', encodeURIComponent(c.loc || '')).replace('{cityName}', encodeURIComponent(c.name || ''))
+    }));
   }
   function sealText(dayIdx) {
     const n = dayIdx + 1;
-    return `第${n > 9 ? `<span class="tcy">${n}</span>` : n}天`;
+    return esc(T.sealFmt).replace('{n}', n > 9 ? `<span class="tcy">${n}</span>` : String(n));
   }
+  const hzLen = s => Array.from(s || '').length;
 
   /* ---------- Hinweise ---------- */
 
@@ -184,28 +266,60 @@
   function tripWarnings() {
     const out = [];
     if (!state.start) return out;
+    const w = T.warnings || {};
     const first = dayDate(0);
     const last = dayDate(state.days.length - 1);
     const today = new Date(); today.setHours(0, 0, 0, 0);
     if (last < today) out.push('Das Abflugdatum liegt in der Vergangenheit.');
-    if (last > VISA_END) out.push('Die Visumfreiheit für Deutsche gilt laut aktuellem Stand bis 31.12.2026. Vor dem Buchen prüfen, ob sie verlängert wurde.');
-    const hol = [];
-    for (let y = first.getFullYear(); y <= last.getFullYear(); y++) {
-      hol.push(['die Golden Week (1.–7. Oktober)', new Date(y, 9, 1), new Date(y, 9, 7)]);
-      hol.push(['die Feiertage um den 1. Mai', new Date(y, 4, 1), new Date(y, 4, 5)]);
-      if (CNY_DATES[y]) {
-        const [m, d] = CNY_DATES[y];
-        hol.push(['das Chinesische Neujahr', new Date(y, m, d - 7), new Date(y, m, d + 10)]);
+    (w.after || []).forEach(x => { if (last > parseDate(x.date)) out.push(x.text); });
+    (w.holidays || []).forEach(h => {
+      const ranges = [];
+      if (isDate(h.from)) ranges.push([parseDate(h.from), parseDate(h.to)]);
+      else {
+        for (let y = first.getFullYear() - 1; y <= last.getFullYear(); y++) {
+          const a = mdDate(y, h.from);
+          let b = mdDate(y, h.to);
+          if (b < a) b = mdDate(y + 1, h.to);
+          ranges.push([a, b]);
+        }
       }
-    }
-    hol.forEach(([n, a, b]) => {
-      if (first <= b && last >= a) out.push(`Eure Reise fällt in ${n}. Dann reist halb China – Züge, Hotels und Sehenswürdigkeiten sind voll und teurer.`);
+      if (ranges.some(([a, b]) => first <= b && last >= a)) out.push(`Eure Reise fällt in ${h.name}. ${h.text || w.holidayText || ''}`.trim());
     });
     const months = new Set();
-    for (let i = 0; i < state.days.length; i++) months.add(dayDate(i).getMonth());
-    if ([5, 6, 7].some(m => months.has(m))) out.push('Sommer: In Chongqing und Shanghai oft über 35 °C und schwül, dazu Regenzeit.');
-    if ([11, 0, 1].some(m => months.has(m))) out.push('Winter: Peking liegt unter 0 °C, in Zhangjiajie können Wege und Seilbahnen bei Eis schließen.');
-    return out;
+    for (let i = 0; i < state.days.length; i++) months.add(dayDate(i).getMonth() + 1);
+    (w.seasons || []).forEach(s => { if (s.months.some(m => months.has(m))) out.push(s.text); });
+    return Array.from(new Set(out));
+  }
+
+  /* ---------- Startseite: alle Reisen ---------- */
+
+  function renderHome() {
+    const cards = TRIPS.map(t => {
+      const s = savedRaw(t.id);
+      const days = s ? s.days : t.defaultPlan;
+      const stops = [];
+      days.forEach(d => { if (d && t.cities[d.city] && d.city !== 'fra' && d.city !== 'any' && stops[stops.length - 1] !== d.city) stops.push(d.city); });
+      const nights = days.filter(d => d && d.city !== 'fra').length;
+      const start = s && isDate(s.start) ? parseDate(s.start) : null;
+      const lt = t.theme.light, dk = t.theme.dark;
+      return `<a class="trip" href="#${t.id}/route" style="--tk-l:${lt.ticket};--tk-d:${dk.ticket};--tki-l:${lt.ink};--tki-d:${dk.ink};--tkl-l:${lt.line};--tkl-d:${dk.line};--font-hz:${esc(fontStack(t))}">
+        <div class="trip-head">
+          <span class="trip-top"><span class="seal hz" lang="${t.lang}" aria-hidden="true">${t.seal}</span><span class="trip-days">${days.length} ${days.length === 1 ? 'Tag' : 'Tage'}, ${nightsText(nights)}</span></span>
+          <h2 class="trip-name">${esc(t.name)}</h2>
+          <span class="trip-stops" lang="${t.lang}">${stops.map(k => { const c = cityColors(t, k); return `<span class="hz dual" style="--c-l:${c[0]};--c-d:${c[1]}">${t.cities[k].loc}</span>`; }).join('')}</span>
+        </div>
+        <div class="trip-body">
+          <span class="trip-cities">${stops.map(k => esc(t.cities[k].name)).join(' → ')}</span>
+          <span class="trip-when">${start ? 'Abflug ' + fmtLong.format(start) : 'Noch kein Abflugdatum'}</span>
+        </div>
+      </a>`;
+    }).join('');
+    return `
+    <section class="hero home-hero">
+      <h1 class="hero-title">Unsere Reisen</h1>
+      <p class="lede">Jede Reise hat ihren eigenen Plan mit Tagen, Ideen, Tipps und Checkliste. Was ihr ändert, bleibt in eurem Browser und lässt sich per Link teilen.</p>
+    </section>
+    <div class="trips">${cards}</div>`;
   }
 
   /* ---------- Route ---------- */
@@ -220,8 +334,7 @@
     return segs;
   }
   function hopBetween(a, b) {
-    const days = [state.days[b.from], state.days[a.to]];
-    for (const d of days) {
+    for (const d of [state.days[b.from], state.days[a.to]]) {
       for (const it of d.items) {
         const x = getAct(it.id);
         if (x && isTransport(x) && x.mode && x.mode !== 'auto') return x;
@@ -237,12 +350,12 @@
     segs.forEach((s, k) => {
       const c = T.cities[s.city];
       const isFra = s.city === 'fra';
-      const label = isFra ? 'Frankfurt' : c.name;
+      const label = isFra ? homeName() : c.name;
       const sub = isFra ? (k === 0 ? 'Abflug' : 'Landung') : nightsText(s.count);
-      parts.push(`<div class="stop" role="listitem" style="--c:var(--${s.city})">
+      parts.push(`<div class="stop" role="listitem" style="--c:var(--c-${s.city})">
         <button class="stop-btn" data-action="jump" data-day="${s.from}">
           <span class="stop-dot" aria-hidden="true"></span>
-          <span class="hz stop-hz">${c.zh}</span>
+          <span class="hz stop-hz${hzLen(c.loc) >= 5 ? ' is-long' : ''}"${LA()}>${c.loc}</span>
           <span class="stop-name">${esc(label)}</span>
           <span class="stop-sub">${sub}</span>
         </button></div>`);
@@ -256,7 +369,7 @@
 
   function ticketHtml(a, info, dayIdx) {
     const dt = dayDate(dayIdx);
-    const size = zh => `hz tk-hz-${Math.min(4, Math.max(2, zh.length))}`;
+    const size = s => `hz tk-hz-${Math.min(7, Math.max(2, hzLen(s)))}`;
     return `<article class="ticket">
       <div class="tk-head">
         <div class="tk-top">
@@ -265,9 +378,9 @@
           <span class="tk-mode">${I[a.mode === 'zug' ? 'train' : 'flug']}${esc(info.label)}</span>
         </div>
         <div class="tk-route">
-          <div class="tk-st"><span class="${size(info.from[0])}">${info.from[0]}</span><span class="tk-py">${esc(info.from[1])}</span></div>
+          <div class="tk-st"><span class="${size(info.from[0])}"${LA()}>${info.from[0]}</span><span class="tk-py">${esc(info.from[1])}</span></div>
           <div class="tk-arrow"><span>${esc(a.dshort)}</span></div>
-          <div class="tk-st tk-to"><span class="${size(info.to[0])}">${info.to[0]}</span><span class="tk-py">${esc(info.to[1])}</span></div>
+          <div class="tk-st tk-to"><span class="${size(info.to[0])}"${LA()}>${info.to[0]}</span><span class="tk-py">${esc(info.to[1])}</span></div>
         </div>
       </div>
       <div class="tk-body">
@@ -281,8 +394,8 @@
 
   function cityHtml(key, nights) {
     const c = T.cities[key];
-    return `<article class="city" style="--c:var(--${key})">
-      <div class="city-mark hz" aria-hidden="true">${c.zh}</div>
+    return `<article class="city" style="--c:var(--c-${key})">
+      <div class="city-mark hz${hzLen(c.loc) >= 4 ? ' is-long' : ''}" aria-hidden="true"${LA()}>${c.loc}</div>
       <div class="city-body">
         <h3 class="city-name">${c.name} <span class="city-py">${c.py}</span></h3>
         <p class="city-n">${nights ? nightsText(nights) + ' im Plan' : 'Aktuell nicht im Plan'}</p>
@@ -292,7 +405,7 @@
           <dt>Hotelpreise</dt><dd>
             <table class="prices"><thead><tr>${c.prices.map(p => `<th scope="col">${p[0]}</th>`).join('')}</tr></thead>
             <tbody><tr>${c.prices.map(p => `<td>${p[1]}</td>`).join('')}</tr></tbody></table>
-            <span class="muted">pro Zimmer und Nacht</span></dd>
+            <span class="muted">${esc(c.priceNote || 'pro Zimmer und Nacht')}</span></dd>
           <dt>Ankommen</dt><dd>${esc(c.arrive)}</dd>
           <dt>Unterwegs</dt><dd>${esc(c.move)}</dd>
         </dl>
@@ -302,37 +415,37 @@
   }
 
   function budgetHtml() {
+    const B = T.budget;
     const nights = state.days.filter(d => d.city !== 'fra').length;
     const people = state.people;
     const rooms = Math.ceil(people / 2);
-    const hotel = nights * HOTEL_TIERS[state.hotelTier][1] * rooms / people;
+    const hotel = nights * B.hotel[state.hotelTier][1] * rooms / people;
     let transport = 0, entries = 0;
     state.days.forEach(d => d.items.forEach(it => {
       const a = getAct(it.id);
       if (!a || !a.p) return;
       if (isTransport(a)) transport += a.p / state.rate; else entries += a.p / state.rate;
     }));
-    const food = nights * FOOD_TIERS[state.foodTier][1];
-    const extra = 150;
-    const base = hotel + transport + entries + food + extra;
-    const seg = (kind, tiers, cur) => `<div class="seg" role="group" aria-label="${kind === 'hotel' ? 'Hotel-Niveau' : 'Essen pro Tag'}">${tiers.map((t, i) =>
-      `<button class="seg-btn" data-action="tier" data-kind="${kind}" data-v="${i}" aria-pressed="${i === cur}">${t[0]} <span>${t[1]} €</span></button>`).join('')}</div>`;
+    const food = nights * B.food[state.foodTier][1];
+    const base = hotel + transport + entries + food + B.extra;
+    const seg = (kind, tiers, curTier) => `<div class="seg" role="group" aria-label="${kind === 'hotel' ? 'Hotel-Niveau' : 'Essen pro Tag'}">${tiers.map((t, i) =>
+      `<button class="seg-btn" data-action="tier" data-kind="${kind}" data-v="${i}" aria-pressed="${i === curTier}">${t[0]} <span>${t[1]} €</span></button>`).join('')}</div>`;
     return `<div class="panel budget">
       <div class="budget-controls">
-        <div><p class="label">Hotel pro Zimmer und Nacht</p>${seg('hotel', HOTEL_TIERS, state.hotelTier)}</div>
-        <div><p class="label">Essen und Trinken pro Tag</p>${seg('food', FOOD_TIERS, state.foodTier)}</div>
+        <div><p class="label">Hotel pro Zimmer und Nacht</p>${seg('hotel', B.hotel, state.hotelTier)}</div>
+        <div><p class="label">Essen und Trinken pro Tag</p>${seg('food', B.food, state.foodTier)}</div>
       </div>
       <table class="budget-table">
         <caption>Geschätzt pro Person, ${people === 1 ? '1 Reisender' : people + ' Reisende'}${people > 1 ? ', Zimmer geteilt' : ''}</caption>
         <tbody>
-          <tr><th scope="row">Gabelflug Frankfurt – China</th><td>600–1.000 €</td></tr>
+          <tr><th scope="row">${esc(B.flightLabel)}</th><td>${num(B.flight[0])}–${num(B.flight[1])} €</td></tr>
           <tr><th scope="row">Hotels, ${nights} Nächte</th><td>${num(hotel)} €</td></tr>
-          <tr><th scope="row">Züge und Inlandsflug aus eurem Plan</th><td>${num(transport)} €</td></tr>
+          <tr><th scope="row">Züge und Inlandsflüge aus eurem Plan</th><td>${num(transport)} €</td></tr>
           <tr><th scope="row">Eintritte und Aktivitäten aus eurem Plan</th><td>${num(entries)} €</td></tr>
           <tr><th scope="row">Essen und Trinken</th><td>${num(food)} €</td></tr>
-          <tr><th scope="row">Metro, Taxi, eSIM, Souvenirs</th><td>${num(extra)} €</td></tr>
+          <tr><th scope="row">${esc(B.extraLabel)}</th><td>${num(B.extra)} €</td></tr>
         </tbody>
-        <tfoot><tr><th scope="row">Summe</th><td>${num(base + 600)}–${num(base + 1000)} €</td></tr></tfoot>
+        <tfoot><tr><th scope="row">Summe</th><td>${num(base + B.flight[0])}–${num(base + B.flight[1])} €</td></tr></tfoot>
       </table>
     </div>`;
   }
@@ -348,32 +461,32 @@
     const warns = tripWarnings();
     return `
     <section class="hero">
-      <h1 class="hero-title">Zwei Wochen China</h1>
-      <p class="lede">Peking, Shanghai, die Avatar-Berge von Zhangjiajie und Chongqing – mit Zug und Flug ab Frankfurt. Unter „Tage“ liegt schon ein fertiger Plan. Ihr tauscht nur noch aus, was euch nicht passt, und schickt ihn euch per Link.</p>
+      <h1 class="hero-title">${esc(T.title)}</h1>
+      <p class="lede">${esc(T.lede)}</p>
       ${routeLine()}
     </section>
 
     <section class="panel setup" aria-labelledby="setup-h">
       <h2 id="setup-h" class="panel-title">Eckdaten</h2>
       <div class="fields">
-        <label class="field"><span>Abflug in Frankfurt</span><input type="date" data-set="start" value="${esc(state.start)}"></label>
+        <label class="field"><span>Abflug in ${esc(homeName())}</span><input type="date" data-set="start" value="${esc(state.start)}"></label>
         <label class="field"><span>Reisende</span><input type="number" inputmode="numeric" min="1" max="12" data-set="people" value="${state.people}"></label>
-        <label class="field"><span>1 € in CNY</span><input type="number" inputmode="decimal" step="0.1" min="1" data-set="rate" value="${state.rate}"></label>
+        <label class="field"><span>${esc(T.currency.rateLabel)}</span><input type="number" inputmode="decimal" step="any" min="0.01" data-set="rate" value="${state.rate}"></label>
       </div>
       ${state.start
         ? `<p class="setup-sum">${fmtLong.format(dayDate(0))} bis ${fmtLong.format(dayDate(state.days.length - 1))}</p>`
-        : '<p class="setup-sum muted">Mit Datum zeigt der Plan Wochentage, warnt vor Ruhetagen (die Verbotene Stadt hat montags zu) und rechnet die Buchungsfristen aus.</p>'}
+        : '<p class="setup-sum muted">Mit Datum zeigt der Plan Wochentage, warnt vor Ruhetagen und Feiertagen und rechnet die Buchungsfristen aus.</p>'}
       ${warns.length ? `<ul class="alerts">${warns.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
     </section>
 
     <section aria-labelledby="legs-h">
       <h2 id="legs-h" class="sec-title">Die Strecke</h2>
-      <p class="sec-lede">Hin nach Peking, zurück ab Chongqing: Als Gabelflug gebucht spart ihr euch den Rückweg quer durchs Land.</p>
+      <p class="sec-lede">${esc(T.routeLede)}</p>
       <div class="tickets">${tickets.join('') || '<p class="muted">Keine Fahrten im Plan.</p>'}</div>
     </section>
 
     <section aria-labelledby="cities-h">
-      <h2 id="cities-h" class="sec-title">Die Städte</h2>
+      <h2 id="cities-h" class="sec-title">Die Stationen</h2>
       <div class="cities">${CITY_KEYS.map(k => cityHtml(k, nights[k] || 0)).join('')}</div>
     </section>
 
@@ -398,7 +511,7 @@
       <button class="slot" data-action="slot" data-day="${i}" data-idx="${j}" title="Tageszeit ändern">${SLOTS[it.slot]}</button>
       <div class="item-main">
         <button class="item-title" data-action="detail" data-id="${a.id}" data-day="${i}" data-idx="${j}">${tr && a.mode ? I[a.mode === 'zug' ? 'train' : a.mode] : ''}${esc(a.t)}</button>
-        <div class="item-meta">${a.zh ? `<span class="zh">${esc(a.zh)}</span>` : ''}<span>${fmtHours(a.d)}</span><span>${esc(priceText(a))}</span>${chilis(a.v)}</div>
+        <div class="item-meta">${a.loc ? `<span class="loc"${LA()}>${esc(a.loc)}</span>` : ''}<span>${fmtHours(a.d)}</span><span>${esc(priceText(a))}</span>${chilis(a.v)}</div>
         ${warns.length ? `<p class="warn">${esc(warns.join(', '))}</p>` : ''}
       </div>
       <div class="item-actions">
@@ -415,13 +528,13 @@
     const c = T.cities[d.city];
     const hours = d.items.reduce((s, it) => { const a = getAct(it.id); return s + (a ? Math.min(a.d || 0, 14) : 0); }, 0);
     const today = dt && sameDay(dt, new Date());
-    return `<li class="day${today ? ' is-today' : ''}" id="day-${i}" style="--c:var(--${d.city})">
+    return `<li class="day${today ? ' is-today' : ''}" id="day-${i}" style="--c:var(--c-${d.city})">
       <div class="day-stamp">
         <span class="day-word">Tag</span>
         <span class="day-n">${i + 1}</span>
         ${dt ? `<span class="day-date">${fmtDay.format(dt)}</span>` : ''}
         ${today ? '<span class="day-today">Heute</span>' : ''}
-        ${d.city !== 'fra' ? `<span class="hz day-hz">${c.zh}</span>` : ''}
+        ${d.city !== 'fra' ? `<span class="hz day-hz"${LA()}>${c.loc}</span>` : ''}
       </div>
       <div class="day-body">
         <div class="day-top">
@@ -435,7 +548,7 @@
         <button class="btn add" data-action="open-picker" data-day="${i}">${I.plus}Aktivität hinzufügen</button>
         <div class="day-extra">
           ${d.city !== 'fra' ? `<div class="hotel">
-            <label class="field"><span>Hotel</span><input data-bind="hotel" data-day="${i}" value="${esc(d.hotel)}" placeholder="Name und Adresse, gern auf Chinesisch" autocomplete="off"></label>
+            <label class="field"><span>Hotel</span><input data-bind="hotel" data-day="${i}" value="${esc(d.hotel)}" placeholder="Name und Adresse in Landesschrift" autocomplete="off"></label>
             <button class="icon-btn big" data-action="taxi-hotel" data-day="${i}" aria-label="Hotel als Taxi-Karte zeigen" title="Als Taxi-Karte zeigen">${I.card}</button>
           </div>` : ''}
           <label class="field"><span>Notizen</span><textarea rows="1" data-bind="note" data-day="${i}" placeholder="Reservierungsnr., Treffpunkt …">${esc(d.note)}</textarea></label>
@@ -453,12 +566,12 @@
     const ti = todayIndex();
     const strip = state.days.map((d, i) => {
       const dt = dayDate(i);
-      return `<button class="strip-day" data-action="jump" data-day="${i}" style="--c:var(--${d.city})" title="Tag ${i + 1}${dt ? ', ' + fmtDay.format(dt) : ''}, ${cityName(d.city)}"><b>${i + 1}</b><span class="hz">${T.cities[d.city].zh.charAt(0)}</span></button>`;
+      return `<button class="strip-day" data-action="jump" data-day="${i}" style="--c:var(--c-${d.city})" title="Tag ${i + 1}${dt ? ', ' + fmtDay.format(dt) : ''}, ${cityName(d.city)}"><b>${i + 1}</b><span class="hz"${LA()}>${Array.from(T.cities[d.city].loc)[0] || ''}</span></button>`;
     }).join('');
     return `
     <section class="page-head">
       <h1 class="page-title">Tagesplan</h1>
-      <p class="lede">${state.days.length} Tage, ${nights} Nächte in China, Eintritte ca. ${num(entries)} CNY pro Person (≈ ${num(entries / state.rate)} €). Antippen zeigt Details, mit den Pfeilen sortiert ihr um.</p>
+      <p class="lede">${state.days.length} Tage, ${nights} Nächte in ${esc(T.name)}, Eintritte ca. ${num(entries)} ${cur()} pro Person (≈ ${num(entries / state.rate)} €). Antippen zeigt Details, mit den Pfeilen sortiert ihr um.</p>
       <div class="toolbar">
         <button class="btn primary" data-action="share">${I.share}Plan teilen</button>
         ${ti >= 0 ? `<button class="btn" data-action="jump" data-day="${ti}">Zu heute</button>` : ''}
@@ -487,7 +600,7 @@
     if (f.cat && f.cat !== 'all' && a.cat.indexOf(f.cat) < 0) return false;
     if (f.crazy && (a.v || 0) < f.crazy) return false;
     if (f.q) {
-      const hay = norm([a.t, a.zh, a.desc, a.tip, cityName(a.c)].join(' '));
+      const hay = norm([a.t, a.loc, a.desc, a.tip, cityName(a.c)].join(' '));
       if (norm(f.q).split(/\s+/).some(w => w && hay.indexOf(w) < 0)) return false;
     }
     return true;
@@ -500,18 +613,19 @@
     if (a.book) facts.push(['Buchen', a.book]);
     if (a.closed) facts.push(['Ruhetag', a.closed.map(x => WD_SHORT[x]).join(', ')]);
     if (a.only) facts.push(['Nur', a.only.map(x => WD_SHORT[x]).join('/')]);
-    return `<article class="act" style="--c:var(--${a.c})">
-      ${days.length ? `<span class="seal-stamp${stampId === a.id ? ' is-new' : ''}" title="Eingeplant an Tag ${days.map(x => x + 1).join(', ')}">${sealText(days[0])}</span>` : ''}
-      <div class="act-top"><span class="act-city">${c.zh && a.c !== 'fra' ? `<span class="hz">${c.zh}</span>` : ''}${a.c === 'fra' ? 'An- und Abreise' : c.name}</span>${chilis(a.v)}</div>
+    const maps = mapLinks(a);
+    return `<article class="act" style="--c:var(--c-${a.c})">
+      ${days.length ? `<span class="seal-stamp${stampId === a.id ? ' is-new' : ''}"${LA()} title="Eingeplant an Tag ${days.map(x => x + 1).join(', ')}">${sealText(days[0])}</span>` : ''}
+      <div class="act-top"><span class="act-city">${c.loc && a.c !== 'fra' ? `<span class="hz"${LA()}>${c.loc}</span>` : ''}${a.c === 'fra' ? 'An- und Abreise' : c.name}</span>${chilis(a.v)}</div>
       <h3 class="act-title">${esc(a.t)}</h3>
-      ${a.zh ? `<p class="zh">${esc(a.zh)}</p>` : ''}
+      ${a.loc ? `<p class="loc"${LA()}>${esc(a.loc)}</p>` : ''}
       <p class="act-desc">${esc(a.desc)}</p>
       ${a.tip ? `<p class="act-tip"><strong>Tipp:</strong> ${esc(a.tip)}</p>` : ''}
       <dl class="act-facts">${facts.map(f => `<div><dt>${f[0]}</dt><dd>${esc(f[1])}</dd></div>`).join('')}</dl>
       <div class="act-actions">
         <button class="btn primary" data-action="add" data-id="${a.id}">${I.plus}Einplanen</button>
         ${canTaxi(a) ? `<button class="btn" data-action="taxi" data-id="${a.id}">Taxi-Karte</button>` : ''}
-        ${canTaxi(a) && a.c !== 'any' ? `<a class="link" href="${amapUrl(a)}" target="_blank" rel="noopener">Amap</a>` : ''}
+        ${maps.length ? `<a class="link" href="${esc(maps[0].url)}" target="_blank" rel="noopener">${esc(maps[0].label)}</a>` : ''}
       </div>
     </article>`;
   }
@@ -525,25 +639,25 @@
       if (!acts.length) return '';
       const c = T.cities[key];
       const title = key === 'fra' ? 'An- und Abreise' : key === 'any' ? 'Überall möglich' : c.name;
-      return `<section class="group" style="--c:var(--${key})">
-        <h2 class="group-h">${c.zh && key !== 'fra' ? `<span class="hz">${c.zh}</span>` : ''}${title}<span class="count">${acts.length}</span></h2>
+      return `<section class="group" style="--c:var(--c-${key})">
+        <h2 class="group-h">${c.loc && key !== 'fra' ? `<span class="hz"${LA()}>${c.loc}</span>` : ''}${title}<span class="count">${acts.length}</span></h2>
         <div class="acts">${acts.map(a => cardHtml(a, pm)).join('')}</div>
       </section>`;
     }).join('');
   }
 
-  function chip(k, v, label, cur) {
-    return `<button class="chip" data-action="filter" data-k="${k}" data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label}</button>`;
+  function chip(k, v, label, curVal) {
+    return `<button class="chip" data-action="filter" data-k="${k}" data-v="${v}" aria-pressed="${String(v) === String(curVal)}">${label}</button>`;
   }
 
   function renderIdeas() {
-    const cats = Object.keys(T.categories).filter(k => k !== 'eigene' || Object.keys(state.custom).length);
+    const cats = Object.keys(CATEGORIES).filter(k => k !== 'eigene' || Object.keys(state.custom).length);
     return `
     <section class="page-head">
       <h1 class="page-title">Ideen</h1>
-      <p class="lede">${allActs().length} Dinge zwischen Kaiserpalast und Bungee-Sprung. „Einplanen“ legt sie direkt in einen Tag, der rote Stempel zeigt, wo sie schon drin sind.</p>
+      <p class="lede">${allActs().length} Ideen von klassisch bis komplett verrückt. „Einplanen“ legt sie direkt in einen Tag, der rote Stempel zeigt, wo sie schon drin sind.</p>
       <div class="filters">
-        <label class="search"><span class="sr-only">Ideen durchsuchen</span><input type="search" id="q" value="${esc(filters.q)}" placeholder="Suchen, z. B. Hotpot, Mauer, Glas" autocomplete="off"></label>
+        <label class="search"><span class="sr-only">Ideen durchsuchen</span><input type="search" id="q" value="${esc(filters.q)}" placeholder="Suchen, z. B. Markt, Tempel, Nacht" autocomplete="off"></label>
         <div class="chips" role="group" aria-label="Ort">
           ${chip('city', 'all', 'Alle Orte', filters.city)}
           ${CITY_KEYS.map(k => chip('city', k, T.cities[k].name, filters.city)).join('')}
@@ -551,7 +665,7 @@
         </div>
         <div class="chips" role="group" aria-label="Art">
           ${chip('cat', 'all', 'Alles', filters.cat)}
-          ${cats.map(k => chip('cat', k, T.categories[k], filters.cat)).join('')}
+          ${cats.map(k => chip('cat', k, CATEGORIES[k], filters.cat)).join('')}
         </div>
         <div class="chips" role="group" aria-label="Verrückt-Faktor">
           <span class="chips-label">Verrückt-Faktor</span>
@@ -568,21 +682,22 @@
   function weatherTable() {
     const months = new Set();
     if (state.start) for (let i = 0; i < state.days.length; i++) months.add(dayDate(i).getMonth());
-    const rows = CITY_KEYS.map(k => `<tr><th scope="row">${T.cities[k].name}</th>${T.weather[k].map((t, m) =>
+    const keys = CITY_KEYS.filter(k => T.weather[k]);
+    const rows = keys.map(k => `<tr><th scope="row">${T.cities[k].name}</th>${T.weather[k].map((t, m) =>
       `<td class="${months.has(m) ? 'is-trip' : ''}" style="--t:${Math.max(0, Math.min(1, (t + 2) / 38)).toFixed(2)}">${t}°</td>`).join('')}</tr>`).join('');
     return `<div class="table-wrap"><table class="weather">
       <caption>Durchschnittliche Tageshöchstwerte in °C${months.size ? ', euer Reisemonat ist markiert' : ''}</caption>
-      <thead><tr><th scope="col"><span class="sr-only">Stadt</span></th>${MONTHS.map((m, i) => `<th scope="col" class="${months.has(i) ? 'is-trip' : ''}">${m}</th>`).join('')}</tr></thead>
+      <thead><tr><th scope="col"><span class="sr-only">Ort</span></th>${MONTHS.map((m, i) => `<th scope="col" class="${months.has(i) ? 'is-trip' : ''}">${m}</th>`).join('')}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
   function renderTips() {
     const tips = T.tips.map(t => `<details class="tip" id="tip-${t.id}"><summary>${t.title}</summary><div class="tip-body">${t.html.replace('<div id="weather-table"></div>', weatherTable())}</div></details>`).join('');
-    const phrases = T.phrases.map((p, k) => `<li><button class="phrase" data-action="phrase" data-i="${k}"><span class="zh-big">${p[0]}</span><span class="py">${p[1]}</span><span class="de">${esc(p[2])}</span></button></li>`).join('');
+    const phrases = T.phrases.map((p, k) => `<li><button class="phrase" data-action="phrase" data-i="${k}"><span class="loc-big"${LA()}>${p[0]}</span><span class="py">${esc(p[1])}</span><span class="de">${esc(p[2])}</span></button></li>`).join('');
     return `
     <section class="page-head">
       <h1 class="page-title">Tipps</h1>
-      <p class="lede">Was man vor und während der Reise wissen muss: Bezahlen, Internet, Zug, Hotels, Essen. Antippen zum Aufklappen.</p>
+      <p class="lede">Was man vor und während der Reise wissen muss: Einreise, Bezahlen, Internet, Bahn, Hotels, Essen. Antippen zum Aufklappen.</p>
     </section>
     <div class="tips">
       ${tips}
@@ -637,14 +752,32 @@
 
   /* ---------- Rendern & Navigation ---------- */
 
+  function updateHeader() {
+    const home = view === 'home';
+    document.body.classList.toggle('is-home', home);
+    const seal = $('#brand-seal');
+    const crumb = $('#crumb');
+    seal.textContent = home ? HOME_SEAL : T.seal;
+    seal.setAttribute('lang', home ? 'ja' : T.lang);
+    crumb.hidden = home;
+    crumb.textContent = home ? '' : T.name;
+    document.title = home ? 'Reiseplaner' : `${T.name} – Reiseplaner`;
+    $$('[data-view]').forEach(a => {
+      if (!home) a.setAttribute('href', `#${T.id}/${a.dataset.view}`);
+      if (!home && a.dataset.view === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+  }
+
   function render() {
     const app = $('#app');
-    const html = view === 'tage' ? renderDays() : view === 'ideen' ? renderIdeas() : view === 'tipps' ? renderTips() : view === 'check' ? renderCheck() : renderRoute();
-    app.innerHTML = html;
-    $$('[data-view]').forEach(a => {
-      if (a.dataset.view === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
-    });
-    if (pendingScroll != null) {
+    app.innerHTML = view === 'home' ? renderHome()
+      : view === 'tage' ? renderDays()
+        : view === 'ideen' ? renderIdeas()
+          : view === 'tipps' ? renderTips()
+            : view === 'check' ? renderCheck()
+              : renderRoute();
+    updateHeader();
+    if (pendingScroll != null && view === 'tage') {
       const el = document.getElementById('day-' + pendingScroll);
       pendingScroll = null;
       if (el) requestAnimationFrame(() => el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }));
@@ -652,20 +785,44 @@
     stampId = null;
   }
 
-  function route() {
+  function parseHash() {
     const h = location.hash.replace(/^#/, '');
-    if (h.indexOf('plan=') === 0) return;
-    const next = VIEWS.indexOf(h) >= 0 ? h : 'route';
-    const changed = next !== view;
+    if (!h) return { home: true };
+    if (VIEWS.indexOf(h) >= 0 && TRIP_BY_ID.china) return { legacy: `china/${h}` };   // alte China-Links
+    if (h.indexOf('plan=') === 0) return { plan: h.slice(5), trip: null };
+    const i = h.indexOf('/');
+    const trip = i < 0 ? h : h.slice(0, i);
+    const rest = i < 0 ? '' : h.slice(i + 1);
+    if (!TRIP_BY_ID[trip]) return { home: true };
+    if (rest.indexOf('plan=') === 0) return { plan: rest.slice(5), trip };
+    return { trip, view: VIEWS.indexOf(rest) >= 0 ? rest : 'route' };
+  }
+
+  async function route() {
+    const r = parseHash();
+    if (r.legacy) { location.replace('#' + r.legacy); return; }
+    if (r.plan != null) { await openSharedPlan(r.plan, r.trip); return; }
+    if (r.home) {
+      const was = view;
+      leaveTrip();
+      view = 'home';
+      if (was !== 'home') window.scrollTo(0, 0);
+      render();
+      return;
+    }
+    const tripChanged = !T || T.id !== r.trip;
+    setTrip(r.trip);
+    const changed = tripChanged || r.view !== view;
     const willScroll = pendingScroll != null;
-    view = next;
+    view = r.view;
     if (changed && !willScroll) window.scrollTo(0, 0);
     render();
   }
 
   function go(v) {
-    if (location.hash === '#' + v) { view = v; render(); }
-    else location.hash = v;
+    const h = `#${T.id}/${v}`;
+    if (location.hash === h) { view = v; render(); }
+    else location.hash = h;
   }
 
   /* ---------- Plan ändern ---------- */
@@ -725,12 +882,14 @@
       const dt = dayDate(i);
       const match = d.city === a.c;
       const wd = dt ? dt.getDay() : -1;
-      const blocked = dt && ((a.closed && a.closed.indexOf(wd) >= 0) || (a.only && a.only.indexOf(wd) < 0));
-      return `<li><button class="pick${match ? ' is-match' : ''}" data-action="${action}" data-day="${i}" style="--c:var(--${d.city})"${i === exclude ? ' disabled' : ''}>
+      const closed = dt && a.closed && a.closed.indexOf(wd) >= 0;
+      const notOpen = dt && a.only && a.only.indexOf(wd) < 0;
+      const status = closed ? 'geschlossen' : notOpen ? `nur ${a.only.map(x => WD_SHORT[x]).join('/')}` : d.items.length ? d.items.length + ' geplant' : 'frei';
+      return `<li><button class="pick${match ? ' is-match' : ''}" data-action="${action}" data-day="${i}" style="--c:var(--c-${d.city})"${i === exclude ? ' disabled' : ''}>
         <b>${i + 1}</b>
         <span class="pick-date">${dt ? fmtDay.format(dt) : 'Tag ' + (i + 1)}</span>
         <span class="pick-city">${cityName(d.city)}</span>
-        <span class="pick-count${blocked ? ' is-warn' : ''}">${blocked ? (a.closed && a.closed.indexOf(wd) >= 0 ? 'geschlossen' : 'nur Sa/So') : d.items.length ? d.items.length + ' geplant' : 'frei'}</span>
+        <span class="pick-count${closed || notOpen ? ' is-warn' : ''}">${status}</span>
       </button></li>`;
     }).join('')}</ul>`;
   }
@@ -754,12 +913,12 @@
     if (!list.length) return '<li class="empty">Nichts gefunden.</li>';
     return list.map(a => {
       const elsewhere = pm[a.id] && !here.has(a.id) ? `Tag ${pm[a.id].map(x => x + 1).join(', ')}` : '';
-      return `<li class="pick-row" style="--c:var(--${a.c})">
+      return `<li class="pick-row" style="--c:var(--c-${a.c})">
         <button class="pick-info" data-action="detail" data-id="${a.id}">
           <span class="pick-t">${esc(a.t)}</span>
           <span class="pick-m"><span>${fmtHours(a.d)}</span><span>${esc(priceText(a))}</span>${chilis(a.v)}${elsewhere ? `<span class="pick-else">schon an ${elsewhere}</span>` : ''}</span>
         </button>
-        ${here.has(a.id) ? `<span class="seal-mini${stampId === a.id ? ' is-new' : ''}" title="Schon an diesem Tag">${sealText(picker.day)}</span>` : `<button class="btn small" data-action="pick-act" data-id="${a.id}">${I.plus}Dazu</button>`}
+        ${here.has(a.id) ? `<span class="seal-mini${stampId === a.id ? ' is-new' : ''}"${LA()} title="Schon an diesem Tag">${sealText(picker.day)}</span>` : `<button class="btn small" data-action="pick-act" data-id="${a.id}">${I.plus}Dazu</button>`}
       </li>`;
     }).join('');
   }
@@ -780,11 +939,11 @@
       <details class="custom">
         <summary>Eigene Aktivität anlegen</summary>
         <form id="custom-form" class="custom-form">
-          <label class="field"><span>Titel</span><input name="t" required maxlength="80" placeholder="z. B. Abendessen mit Li"></label>
-          <label class="field"><span>Chinesischer Name oder Adresse (optional, für die Taxi-Karte)</span><input name="zh" maxlength="120"></label>
+          <label class="field"><span>Titel</span><input name="t" required maxlength="80" placeholder="z. B. Abendessen mit Freunden"></label>
+          <label class="field"><span>Name oder Adresse in Landesschrift (optional, für die Taxi-Karte)</span><input name="loc" maxlength="120"></label>
           <div class="fields">
             <label class="field"><span>Dauer in Std.</span><input name="d" type="number" min="0" step="0.5" value="2" inputmode="decimal"></label>
-            <label class="field"><span>Preis p. P. in CNY</span><input name="p" type="number" min="0" step="1" value="0" inputmode="numeric"></label>
+            <label class="field"><span>Preis p. P. in ${esc(cur())}</span><input name="p" type="number" min="0" step="any" value="0" inputmode="numeric"></label>
           </div>
           <label class="field"><span>Notiz</span><textarea name="desc" rows="2" maxlength="400"></textarea></label>
           <button class="btn primary" type="submit">Anlegen und einplanen</button>
@@ -804,14 +963,15 @@
     const inDay = day != null && idx != null && state.days[day] && state.days[day].items[idx];
     const it = inDay ? state.days[day].items[idx] : null;
     const warns = inDay ? itemWarnings(a, day) : [];
-    const c = T.cities[a.c];
+    const c = T.cities[a.c] || T.cities.any;
     const back = modalCtx && modalCtx.type === 'picker' ? modalCtx.day : null;
     const rows = [['Ort', a.c === 'fra' ? 'An- und Abreise' : c.name], ['Dauer', fmtHours(a.d)], ['Preis', priceText(a)]];
     if (a.book) rows.push(['Buchen', a.book]);
     if (a.closed) rows.push(['Ruhetag', a.closed.map(x => WD_SHORT[x]).join(', ')]);
     if (a.only) rows.push(['Nur', a.only.map(x => WD_SHORT[x]).join('/')]);
+    const maps = mapLinks(a);
     openModal(a.t, `
-      ${a.zh ? `<p class="zh-big detail-zh">${esc(a.zh)}</p>` : ''}
+      ${a.loc ? `<p class="loc-big detail-loc"${LA()}>${esc(a.loc)}</p>` : ''}
       ${a.v ? `<p class="detail-crazy">${chilis(a.v)} Verrückt-Faktor ${a.v} von 3</p>` : ''}
       <p>${esc(a.desc)}</p>
       ${a.tip ? `<p class="act-tip"><strong>Tipp:</strong> ${esc(a.tip)}</p>` : ''}
@@ -819,7 +979,7 @@
       ${warns.length ? `<p class="warn">${esc(warns.join(', '))}</p>` : ''}
       <div class="detail-actions">
         ${canTaxi(a) ? `<button class="btn" data-action="taxi" data-id="${a.id}">${I.card}Taxi-Karte</button>` : ''}
-        ${canTaxi(a) && a.c !== 'any' ? `<a class="btn" href="${amapUrl(a)}" target="_blank" rel="noopener">Amap</a><a class="btn" href="${gmapsUrl(a)}" target="_blank" rel="noopener">Google Maps</a>` : ''}
+        ${maps.map(m => `<a class="btn" href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.label)}</a>`).join('')}
       </div>
       ${inDay ? `<div class="detail-actions">
           <button class="btn" data-action="done" data-day="${day}" data-idx="${idx}">${it.done ? 'Wieder offen' : 'Erledigt'}</button>
@@ -839,18 +999,19 @@
 
   /* ---------- Taxi-Karte ---------- */
 
-  function showBig(zh, opts) {
+  function showBig(text, opts) {
     const o = opts || {};
     const d = $('#taxi');
-    const size = zh.length > 24 ? 'is-long' : zh.length > 10 ? 'is-mid' : '';
+    const len = hzLen(text);
+    const size = len > 24 ? 'is-long' : len > 10 ? 'is-mid' : '';
     d.innerHTML = `<div class="taxi-inner">
-      ${o.ask ? '<p class="taxi-ask">请带我去这里</p>' : ''}
-      ${o.city ? `<p class="taxi-city">${esc(o.city)}</p>` : ''}
-      <p class="taxi-zh ${size}">${esc(zh)}</p>
+      ${o.ask ? `<p class="taxi-ask"${LA()}>${esc(T.taxiAsk)}</p>` : ''}
+      ${o.city ? `<p class="taxi-city"${LA()}>${esc(o.city)}</p>` : ''}
+      <p class="taxi-loc ${size}"${LA()}>${esc(text)}</p>
       ${o.py ? `<p class="taxi-py">${esc(o.py)}</p>` : ''}
       ${o.de ? `<p class="taxi-de">${esc(o.de)}</p>` : ''}
       <div class="taxi-actions">
-        <button class="btn" data-action="copy" data-text="${esc(zh)}">Kopieren</button>
+        <button class="btn" data-action="copy" data-text="${esc(text)}">Kopieren</button>
         <button class="btn primary" data-action="close-taxi">Schließen</button>
       </div>
     </div>`;
@@ -861,7 +1022,7 @@
 
   function pack() {
     return {
-      v: 1, s: state.start, n: state.people, r: state.rate, h: state.hotelTier, f: state.foodTier,
+      v: 1, t: T.id, s: state.start, n: state.people, r: state.rate, h: state.hotelTier, f: state.foodTier,
       d: state.days.map(d => [d.city, d.hotel, d.note, d.items.map(it => [it.id, it.slot, it.done ? 1 : 0])]),
       c: state.custom, k: Object.keys(state.checks).filter(k => state.checks[k])
     };
@@ -908,42 +1069,39 @@
   }
 
   async function share() {
-    const url = location.origin + location.pathname + '#plan=' + await encodePlan(pack());
+    const url = location.origin + location.pathname + `#${T.id}/plan=` + await encodePlan(pack());
     openModal('Plan teilen', `
-      <p>Mit diesem Link sieht dein Kollege genau euren Plan, inklusive Hotels, Notizen und Checkliste, und kann ihn übernehmen.</p>
+      <p>Mit diesem Link sieht euer Mitreisender genau diesen Plan, inklusive Hotels, Notizen und Checkliste, und kann ihn übernehmen.</p>
       <label class="field"><span>Link</span><input id="share-url" readonly value="${esc(url)}"></label>
       <div class="detail-actions">
         <button class="btn primary" data-action="copy" data-text="${esc(url)}">Link kopieren</button>
         ${navigator.share ? '<button class="btn" data-action="native-share">Teilen …</button>' : ''}
-        <a class="btn" href="https://wa.me/?text=${encodeURIComponent('Unser China-Plan: ' + url)}" target="_blank" rel="noopener">Per WhatsApp</a>
+        <a class="btn" href="https://wa.me/?text=${encodeURIComponent(`Unser ${T.name}-Plan: ` + url)}" target="_blank" rel="noopener">Per WhatsApp</a>
       </div>
       <p class="modal-hint">Der Plan steckt komplett im Link, nichts liegt auf einem Server. Ändert ihr später etwas, einfach neu teilen.</p>`, { type: 'share', url });
   }
 
-  async function checkSharedPlan() {
-    const m = location.hash.match(/^#plan=([A-Za-z0-9_-]+)$/);
-    if (!m) return false;
-    history.replaceState(null, '', location.pathname + location.search + '#tage');
+  async function openSharedPlan(str, hashTrip) {
+    let obj = null;
+    try { if (/^[A-Za-z0-9_-]+$/.test(str)) obj = await decodePlan(str); } catch (e) { obj = null; }
+    const tripId = (obj && TRIP_BY_ID[obj.t] && obj.t) || hashTrip || (TRIP_BY_ID.china ? 'china' : TRIPS[0].id);
+    history.replaceState(null, '', location.pathname + location.search + `#${tripId}/tage`);
+    setTrip(tripId);
     view = 'tage';
     render();
-    try {
-      const s = unpack(await decodePlan(m[1]));
-      if (!s) throw new Error('ungültig');
-      openModal('Geteilten Plan übernehmen?', `
-        <p>Du hast einen Plan mit ${s.days.length} Tagen bekommen${s.start ? `, Abflug am ${fmtLong.format(new Date(s.start + 'T00:00'))}` : ''}. Übernehmen ersetzt den Plan, der gerade in diesem Browser gespeichert ist.</p>
-        <div class="detail-actions"><button class="btn primary" data-action="accept-shared">Plan übernehmen</button><button class="btn" data-action="close-modal">Meinen behalten</button></div>`,
-      { type: 'shared', s });
-    } catch (e) {
-      toast('Der Link enthält keinen lesbaren Plan.');
-    }
-    return true;
+    const s = obj && unpack(obj);
+    if (!s) { toast('Der Link enthält keinen lesbaren Plan.'); return; }
+    openModal('Geteilten Plan übernehmen?', `
+      <p>Du hast einen ${esc(T.name)}-Plan mit ${s.days.length} Tagen bekommen${s.start ? `, Abflug am ${fmtLong.format(parseDate(s.start))}` : ''}. Übernehmen ersetzt den ${esc(T.name)}-Plan, der gerade in diesem Browser gespeichert ist.</p>
+      <div class="detail-actions"><button class="btn primary" data-action="accept-shared">Plan übernehmen</button><button class="btn" data-action="close-modal">Meinen behalten</button></div>`,
+    { type: 'shared', s });
   }
 
   function exportPlan() {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(Object.assign({ trip: T.id }, state), null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'china-reiseplan.json';
+    a.download = `reiseplan-${T.id}.json`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
@@ -953,7 +1111,12 @@
     const r = new FileReader();
     r.onload = () => {
       try {
-        const s = normalize(JSON.parse(r.result));
+        const raw = JSON.parse(r.result);
+        if (raw.trip && raw.trip !== T.id) {
+          toast(`Diese Datei ist ein ${TRIP_BY_ID[raw.trip] ? TRIP_BY_ID[raw.trip].name : 'anderer'}-Plan. Bitte in der passenden Reise importieren.`);
+          return;
+        }
+        const s = normalize(raw);
         if (!s) throw new Error('ungültig');
         snapshot();
         state = s;
@@ -993,8 +1156,7 @@
 
   const actions = {
     'jump': el => {
-      const i = +el.dataset.day;
-      pendingScroll = i;
+      pendingScroll = +el.dataset.day;
       if (view !== 'tage') go('tage'); else render();
     },
     'ideas-city': el => { filters.city = el.dataset.city; filters.cat = 'all'; go('ideen'); },
@@ -1070,7 +1232,7 @@
       const lastIsHome = days.length > 1 && days[days.length - 1].city === 'fra';
       const pos = lastIsHome ? days.length - 1 : days.length;
       const prev = days[pos - 1];
-      days.splice(pos, 0, { city: prev && prev.city !== 'fra' ? prev.city : 'bj', hotel: prev ? prev.hotel : '', note: '', items: [] });
+      days.splice(pos, 0, { city: prev && prev.city !== 'fra' ? prev.city : CITY_KEYS[0], hotel: prev ? prev.hotel : '', note: '', items: [] });
       pendingScroll = pos;
       commit();
       toast(`Tag ${pos + 1} hinzugefügt`, true);
@@ -1085,13 +1247,13 @@
     },
     'taxi': el => {
       const a = getAct(el.dataset.id);
-      if (!a || !a.zh) return;
+      if (!a || !a.loc) return;
       const c = T.cities[a.c];
-      showBig(a.zh, { ask: true, city: c && c.zh && a.c !== 'fra' && a.c !== 'any' ? c.zh : '', de: a.t });
+      showBig(a.loc, { ask: true, city: c && c.loc && a.c !== 'fra' && a.c !== 'any' ? c.loc : '', de: a.t });
     },
     'taxi-hotel': el => {
       const h = state.days[+el.dataset.day].hotel.trim();
-      if (!h) { toast('Erst das Hotel eintragen, am besten mit chinesischer Adresse.'); return; }
+      if (!h) { toast('Erst das Hotel eintragen, am besten mit Adresse in Landesschrift.'); return; }
       showBig(h, { ask: true });
     },
     'phrase': el => {
@@ -1100,7 +1262,7 @@
     },
     'close-taxi': () => $('#taxi').close(),
     'copy': el => copyText(el.dataset.text),
-    'native-share': () => { if (modalCtx && modalCtx.url) navigator.share({ title: 'Unser China-Plan', url: modalCtx.url }).catch(() => {}); },
+    'native-share': () => { if (modalCtx && modalCtx.url) navigator.share({ title: `Unser ${T.name}-Plan`, url: modalCtx.url }).catch(() => {}); },
     'share': () => share(),
     'accept-shared': () => {
       const s = modalCtx && modalCtx.s;
@@ -1166,9 +1328,9 @@
     const el = e.target;
     if (el.dataset.set) {
       const k = el.dataset.set;
-      if (k === 'start') state.start = /^\d{4}-\d{2}-\d{2}$/.test(el.value) ? el.value : '';
+      if (k === 'start') state.start = isDate(el.value) ? el.value : '';
       if (k === 'people') state.people = clampInt(el.value, 1, 12, 2);
-      if (k === 'rate') state.rate = Number(el.value) > 0 ? Number(el.value) : 8.3;
+      if (k === 'rate') state.rate = Number(el.value) > 0 ? Number(el.value) : T.currency.rate;
       commit();
     } else if (el.dataset.change === 'day-city') {
       state.days[+el.dataset.day].city = el.value;
@@ -1203,7 +1365,7 @@
     const city = state.days[day].city;
     const id = 'c-' + Date.now().toString(36);
     state.custom[id] = {
-      t: title.slice(0, 80), zh: String(f.get('zh') || '').trim().slice(0, 120), desc: String(f.get('desc') || '').trim().slice(0, 400),
+      t: title.slice(0, 80), loc: String(f.get('loc') || '').trim().slice(0, 120), desc: String(f.get('desc') || '').trim().slice(0, 400),
       d: Math.max(0, Number(f.get('d')) || 0), p: Math.max(0, Number(f.get('p')) || 0), c: city === 'fra' ? 'any' : city
     };
     addItem(day, id);
@@ -1212,19 +1374,29 @@
   });
 
   dlg().addEventListener('close', () => { modalCtx = null; });
-  window.addEventListener('hashchange', async () => {
-    if (!(await checkSharedPlan())) route();
-  });
+  window.addEventListener('hashchange', () => { route(); });
 
   /* ---------- Start ---------- */
 
   (async function init() {
-    if (!(await checkSharedPlan())) {
-      const h = location.hash.replace(/^#/, '');
-      const ti = todayIndex();
-      if (!h && ti >= 0) { pendingScroll = ti; location.replace('#tage'); }
-      route();
+    if (!TRIPS.length) { $('#app').innerHTML = '<p class="panel">Keine Reise gefunden. Lege eine Datei in trips/ an.</p>'; return; }
+    migrateLegacy();
+    loadFonts();
+    // Läuft gerade eine Reise? Dann direkt zum heutigen Tag.
+    if (!location.hash) {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      for (const t of TRIPS) {
+        const s = savedRaw(t.id);
+        if (!s || !isDate(s.start)) continue;
+        const idx = Math.round((today - parseDate(s.start)) / 864e5);
+        if (idx >= 0 && idx < s.days.length) {
+          pendingScroll = idx;
+          history.replaceState(null, '', `#${t.id}/tage`);
+          break;
+        }
+      }
     }
+    await route();
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
     }

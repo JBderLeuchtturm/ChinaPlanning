@@ -1,9 +1,9 @@
 {
-  "name": "China-Reiseplaner",
-  "short_name": "China-Reise",
-  "description": "Zwei Wochen China: Peking, Shanghai, Zhangjiajie und Chongqing.",
+  "name": "Reiseplaner",
+  "short_name": "Reisen",
+  "description": "Reiseplaner für China, Südkorea und Japan.",
   "lang": "de",
-  "start_url": "./#tage",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#F2F5F6",
